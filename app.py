@@ -85,6 +85,19 @@ def handle_text(event):
         chat_counter.setdefault(group_id, {"text":0,"image":0})
         chat_counter[group_id]["text"] += 1
 
+        # ===== สรุปบิลเมื่อพิมพ์ /สรุป =====
+        if text == "/สรุป":
+            counter = chat_counter.get(group_id, {"text":0,"image":0})
+            total = counter["text"] + counter["image"]
+            reply = (
+                "✨สรุปบิล✨\n"
+                f"• ข้อความ: {counter['text']}\n"
+                f"• ภาพ: {counter['image']}\n"
+                f"🌷รวมทั้งหมด: {total}"
+            )
+            line_bot_api.push_message(group_id, TextSendMessage(text=reply))
+            return
+
     except Exception as e:
         print("Error in handle_text:", e)
 
