@@ -63,16 +63,33 @@ def handle_text(event):
         message_id = event.message.id
         text = event.message.text.strip()
 
-        # เริ่มนับใหม่เมื่อเจอ ###
-        if text == "###":
-            chat_counter[group_id] = {"text":0,"image":0}
+        # ---------- เริ่มนับบิลใหม่ ----------
+        if text == "เพิ่มประกาศ":
+            chat_counter[group_id] = {"text":0,"image":0}  # รีเซ็ต
+            line_bot_api.push_message(
+                group_id,
+                TextSendMessage(text="📌 เพิ่มประกาศใหม่ / เริ่มนับบิลใหม่เรียบร้อยแล้ว")
+            )
             return
 
-        # ไม่นับ emoji / . / @
+        # ---------- สรุปยอดบิล ----------
+        if text == "###":
+            counter = chat_counter.get(group_id, {"text":0,"image":0})
+            total = counter["text"] + counter["image"]
+            reply = (
+                "✨สรุปบิล✨\n"
+                f"• ข้อความ: {counter['text']}\n"
+                f"• ภาพ: {counter['image']}\n"
+                f"🌷รวมทั้งหมด: {total}📝"
+            )
+            line_bot_api.push_message(group_id, TextSendMessage(text=reply))
+            return
+
+        # ---------- ไม่นับ emoji / . / @ ----------
         if text in [".","@"] or len(text)==1 and not text.isalnum():
             return
 
-        # บันทึกข้อความ
+        # ---------- บันทึกข้อความ ----------
         message_memory[message_id] = {
             "type":"text",
             "user_id":user_id,
@@ -81,22 +98,9 @@ def handle_text(event):
             "group_id":group_id
         }
 
-        # นับข้อความ
+        # ---------- นับข้อความ ----------
         chat_counter.setdefault(group_id, {"text":0,"image":0})
         chat_counter[group_id]["text"] += 1
-
-        # ===== สรุปบิลเมื่อพิมพ์ /สรุป =====
-        if text == "/สรุป":
-            counter = chat_counter.get(group_id, {"text":0,"image":0})
-            total = counter["text"] + counter["image"]
-            reply = (
-                "✨สรุปบิล✨\n"
-                f"• ข้อความ: {counter['text']}\n"
-                f"• ภาพ: {counter['image']}\n"
-                f"🌷รวมทั้งหมด: {total}"
-            )
-            line_bot_api.push_message(group_id, TextSendMessage(text=reply))
-            return
 
     except Exception as e:
         print("Error in handle_text:", e)
