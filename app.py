@@ -3,6 +3,19 @@ from flask import Flask, request, abort, send_file
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
 from linebot.models import (
+    MessageEvent, TextMessage, ImageMessage, TextSendMessage, ImageSendMessage, UnsendEvent
+)
+from datetime import datetime
+import pytz
+
+app = Flask(__name__)
+
+# ======= ใส่ TOKEN / SECRET ของฟ่าง =======
+import os
+from flask import Flask, request, abort, send_file
+from linebot import LineBotApi, WebhookHandler
+from linebot.exceptions import InvalidSignatureError
+from linebot.models import (
     MessageEvent, TextMessage, ImageMessage, TextSendMessage,
     ImageSendMessage, UnsendEvent
 )
@@ -15,7 +28,7 @@ app = Flask(__name__)
 # ===== LINE CONFIG =====
 CHANNEL_ACCESS_TOKEN = "CHJScm6eOVvEqpKzbP7Y0fYj5tVRlaA72LjvZH5Zzye9FzDZBROUF0sBVQgj31Pu52Xw9zoXTHz9syr3D6asy8RX7g+GXeHBKUr+eAHwQKtYz9pDsewuN8x1lwxp4bZeqj6C2cQ92/CBQB5nDac2owdB04t89/1O/w1cDnyilFU="
 CHANNEL_SECRET = "5b32df6428ad0f8861a721bf688522c0"
-YOUR_DOMAIN = "https://linebot-fang.onrender.com"
+YOUR_DOMAIN = "linebot-fang.onrender.com"
 
 line_bot_api = LineBotApi(CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(CHANNEL_SECRET)
@@ -108,70 +121,184 @@ def handle_image(event):
     chat_counter[group_id] = chat_counter.get(group_id, 0) + 1
 
 
-# ============= ดักข้อความ/ภาพที่ถูกลบ =============
+# ==
+line_bot_api = LineBotApi(CHANNEL_ACCESS_TOKEN)
+handler = WebhookHandler(CHANNEL_SECRET)
+
+# ======= ตัวเก็บข้อความและบิล =======
+message_memory = {}
+chat_counter = {}
+bill_number = {}
+
+# =================== Serve ภาพ ===================
+@app.route('/images/<filename>')
+def serve_image(filename):
+    if os.path.exists(filename):
+        return send_file(filename, mimetype='image/jpeg')
+    return "File not found", 404
+
+# =================== Webhook ===================
+@app.route("/callback", methods=["POST"])
+def callback():
+    signature = request.headers.get("X-Line-Signature", "")
+    body = request.get_data(as_text=True)
+    try:
+        handler.handle(body, signature)
+    except InvalidSignatureError:
+        print("Invalid Signature Error")
+        abort(400)
+    except Exception as e:
+        print("Error in /callback:", e)
+        abort(500)
+    return "OK"
+
+# =================== รับข้อความ ===================
+@handler.add(MessageEvent, message=TextMessage)
+def handle_text(event):
+    try:
+        user_id = event.source.user_id
+        group_id = getattr(event.source, 'group_id', user_id)
+        text = event.message.text
+        message_id = event.message.id
+
+        if text.strip() == "เพิ่มประกาศ":
+            bill_number[group_id] = bill_number.get(group_id, 0) + 1
+            chat_counter[group_id] = {"text": 0, "image": 0}
+            message_memory.clear()
+            try:
+                line_bot_api.push_message(group_id, TextSendMessage(
+                    text=f"เริ่มนับจากประกาศนี้เป็นบิลที่ {bill_number[group_id]} 🧾"
+                ))
+            except Exception as e:
+                print("Push message failed (เพิ่มประกาศ):", e)
+            return
+
+        if text.strip() == "###":
+            counts = chat_counter.get(group_id, {"text":0,"image":0})
+            total = counts["text"] + counts["image"]
+            bill_no = bill_number.get(group_id, 1)
+            summary = (
+                f"✨สรุปบิลที่ {bill_no}✨\n"
+                f"• ข้อความ: {counts['text']}\n"
+                f"• ภาพ: {counts['image']}\n"
+                f"🌷รวมทั้งหมด: {total} 📬"
+            )
+            try:
+                line_bot_api.push_message(group_id, TextSendMessage(text=summary))
+            except Exception as e:
+                print("Push message failed (สรุปบิล):", e)
+            return
+
+        if text.strip() != ".":
+            chat_counter.setdefault(group_id, {"text":0,"image":0})
+            chat_counter[group_id]["text"] += 1
+
+        message_memory[message_id] = {
+            "type":"text",
+            "user_id":user_id,
+            "text":text,
+            "timestamp":datetime.now(pytz.timezone("Asia/Bangkok")),
+            "group_id":group_id
+        }
+
+    except Exception as e:
+        print("Error in handle_text:", e)
+
+# =================== รับภาพ ===================
+@handler.add(MessageEvent, message=ImageMessage)
+def handle_image(event):
+    try:
+        user_id = event.source.user_id
+        group_id = getattr(event.source,'group_id',user_id)
+        message_id = event.message.id
+
+        chat_counter.setdefault(group_id, {"text":0,"image":0})
+        chat_counter[group_id]["image"] += 1
+
+        image_content = line_bot_api.get_message_content(message_id)
+        image_path = f"temp_{message_id}.jpg"
+        with open(image_path,"wb") as f:
+            for chunk in image_content.iter_content():
+                f.write(chunk)
+
+        message_memory[message_id] = {
+            "type":"image",
+            "user_id":user_id,
+            "image_path":image_path,
+            "timestamp":datetime.now(pytz.timezone("Asia/Bangkok")),
+            "group_id":group_id
+        }
+
+    except Exception as e:
+        print("Error in handle_image:", e)
+
+# =================== จับยกเลิกข้อความ/ภาพ ===================
 @handler.add(UnsendEvent)
 def handle_unsend(event):
-    msg_id = event.unsend.message_id
-    source = event.source
+    try:
+        message_id = event.unsend.message_id
+        if message_id not in message_memory:
+            return
+        data = message_memory[message_id]
+        group_id = data["group_id"]
+        user_id = data["user_id"]
 
-    # เป้าหมายตอบกลับ
-    target = (
-        getattr(source, "group_id", None)
-        or getattr(source, "room_id", None)
-        or getattr(source, "user_id", None)
-    )
-
-    now = datetime.now(pytz.timezone("Asia/Bangkok")).strftime("%d/%m/%Y %H:%M:%S")
-
-    # ====== กรณีภาพถูกลบ ======
-    if msg_id in image_memory:
-        data = image_memory.pop(msg_id)
         try:
-            profile = line_bot_api.get_profile(data["user_id"])
-            user_name = profile.display_name
-        except:
-            user_name = "ไม่ทราบชื่อ"
+            # ตรวจว่าอยู่ในกลุ่มหรือไม่
+            if hasattr(event.source, "group_id"):
+                profile = line_bot_api.get_group_member_profile(event.source.group_id, user_id)
+            elif hasattr(event.source, "room_id"):
+                profile = line_bot_api.get_room_member_profile(event.source.room_id, user_id)
+            else:
+                profile = line_bot_api.get_profile(user_id)
+            display_name = profile.display_name
+        except Exception as e:
+            print("ไม่สามารถดึงชื่อผู้ใช้ได้:", e)
+            display_name = "ไม่ทราบชื่อ"
 
-        reply = (
-            "[ ภาพที่ถูกยกเลิก ]\n"
-            f"• ผู้ส่ง: {user_name}\n"
-            f"• เวลา: {now}\n"
-            f"• ภาพ: (ส่งภาพต้นฉบับกลับมา)"
-        )
+        timestamp = data["timestamp"].strftime("%d/%m/%Y %H:%M:%S")
 
-        file_name = os.path.basename(data["path"])
-        url = f"https://{YOUR_DOMAIN}/images/{file_name}"
+        if data["type"]=="text":
+            text = data["text"]
+            reply = (
+                f"[  ข้อความที่ถูกยกเลิก  ]\n"
+                f"• ผู้ส่ง: {display_name}\n"
+                f"• เวลา: {timestamp}\n"
+                f"• ข้อความ : {text}"
+            )
+            try:
+                line_bot_api.push_message(group_id, TextSendMessage(text=reply))
+            except Exception as e:
+                print("Push message failed (ข้อความยกเลิก):", e)
 
-        line_bot_api.push_message(target, TextMessage(text=reply))
-        line_bot_api.push_message(target, ImageSendMessage(
-            original_content_url=url,
-            preview_image_url=url
-        ))
-        return
+        elif data["type"]=="image":
+            image_path = data["image_path"]
+            reply_text = (
+                f"[  ข้อความที่ถูกยกเลิก  ]\n"
+                f"• ผู้ส่ง: {display_name}\n"
+                f"• เวลา: {timestamp}\n"
+                f"• ข้อความ : ภาพถูกยกเลิก"
+            )
+            try:
+                line_bot_api.push_message(group_id, [
+                    TextSendMessage(text=reply_text),
+                    ImageSendMessage(
+                        original_content_url=f"https://{YOUR_DOMAIN}/images/{os.path.basename(image_path)}",
+                        preview_image_url=f"https://{YOUR_DOMAIN}/images/{os.path.basename(image_path)}"
+                    )
+                ])
+            except Exception as e:
+                print("Push message failed (ภาพยกเลิก):", e)
 
-    # ====== กรณีข้อความถูกลบ ======
-    if msg_id in message_memory:
-        data = message_memory.pop(msg_id)
-        try:
-            profile = line_bot_api.get_profile(data["user_id"])
-            user_name = profile.display_name
-        except:
-            user_name = "ไม่ทราบชื่อ"
+        if group_id in chat_counter:
+            chat_counter[group_id][data["type"]] = max(0, chat_counter[group_id][data["type"]]-1)
 
-        reply = (
-            "[ ข้อความที่ถูกยกเลิก ]\n"
-            f"• ผู้ส่ง: {user_name}\n"
-            f"• เวลา: {now}\n"
-            f"• ข้อความ: {data['text']}"
-        )
+        del message_memory[message_id]
 
-        line_bot_api.push_message(target, TextMessage(text=reply))
-        return
+    except Exception as e:
+        print("Error in handle_unsend:", e)
 
-    # ถ้าไม่พบข้อมูล
-    line_bot_api.push_message(target, TextMessage("[ ข้อความที่ถูกยกเลิก ]\n• ไม่พบต้นฉบับ"))
-
-
-# ======= Run (สำหรับ local) =======
+# =================== รัน Flask ===================
 if __name__ == "__main__":
-    app.run(port=5000)
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
